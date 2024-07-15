@@ -1,0 +1,85 @@
+-- postgres
+
+Task 1
+CREATE EXTENSION IF NOT EXISTS file_fdw;
+CREATE SERVER IF NOT EXISTS svr
+     FOREIGN DATA WRAPPER file_fdw;
+CREATE FOREIGN TABLE IF NOT EXISTS topup_history (
+    seq INT, id_user INT, topup_date DATE,topup_value INT
+) SERVER svr OPTIONS (
+    filename 'C:/Users/chint/Downloads/topups.tsv', format 'csv', delimiter E'\t', header 'true' );
+
+--Make sure you provide the access to the topups file.
+
+Task 2
+SELECT id_user, SUM(topup_value) AS total_amount
+FROM topup_history GROUP BY id_user
+HAVING SUM(CASE WHEN topup_value = 15 THEN 1 ELSE 0 END) > 0
+order by id_user
+
+Task 3
+WITH recent_topups AS (
+    SELECT *, ROW_NUMBER() OVER(PARTITION BY id_user ORDER BY topup_date DESC, topup_value DESC) AS rn
+    FROM topup_history)
+SELECT * FROM recent_topups WHERE rn <= 5 order by id_user, topup_date desc
+Task 4
+WITH total_topups AS (
+    SELECT id_user, topup_date,topup_value,
+    ROW_NUMBER() OVER (PARTITION BY id_user ORDER BY topup_value DESC, topup_date) AS rn
+    FROM topup_history),
+number_five AS (
+    SELECT id_user, topup_value AS fifth_value
+    FROM total_topups WHERE rn = 5)
+SELECT tt.id_user, tt.topup_date,tt.topup_value
+FROM total_topups tt
+LEFT JOIN number_five nf
+ON tt.id_user = nf.id_user
+WHERE tt.rn <= 5 OR (tt.rn > 5 AND tt.topup_value = nf.fifth_value)
+ORDER BY tt.id_user, tt.rn;
+Task 5
+SELECT id_user, topup_date, topup_value,
+    LEAD(topup_date) OVER (PARTITION BY id_user ORDER BY topup_date DESC) AS prv_topup_dt,
+    (topup_date - LEAD(topup_date) OVER (PARTITION BY id_user ORDER BY topup_date DESC)) AS days_since,
+    CASE WHEN topup_value >= 20 THEN 'Y' ELSE 'N' END AS promo_ind,
+    (SELECT MAX(topup_date)FROM users_topup sub
+        WHERE sub.id_user = main.id_user AND sub.topup_value >= 20 AND sub.topup_date < main.topup_date
+    ) AS previous_qual_topup_dt,
+    CAST(topup_value AS FLOAT) / FIRST_VALUE(topup_value)
+	OVER (PARTITION BY id_user ORDER BY topup_date) AS to_1st_ratio
+    FROM topup_history main;
+
+Task 6
+-- top-ups that qualify for the promotion and calculate their promotion end date
+WITH topups AS (SELECT id_user, topup_date, topup_date + INTERVAL '28 days' AS promo_end
+	FROM topup_history WHERE topup_value >= 20),
+-- the start and end of each promotion period and checking whether it starts a new period or extends the previous one
+consolidated_periods AS (SELECT id_user, topup_date AS promo_start, promo_end,
+	CASE WHEN topup_date <= LAG(promo_end) OVER (PARTITION BY id_user ORDER BY topup_date) THEN 0
+	ELSE 1 END AS new_period_flag FROM topups),
+-- Group the promotion periods based on whether they start a new period or extend an existing one
+period_groups AS (SELECT id_user, promo_start, promo_end,
+    -- Create groups for continuous promotion periods by summing the new_period_flag
+	SUM(new_period_flag) OVER (PARTITION BY id_user ORDER BY promo_start) AS grp FROM consolidated_periods),
+-- Consolidate the promotion periods by finding the earliest start date and the latest end date for each group
+final_periods AS (SELECT id_user, MIN(promo_start) AS promo_start, MAX(promo_end) AS promo_end
+	FROM period_groups GROUP BY id_user, grp)
+SELECT id_user, promo_start, promo_end FROM final_periods ORDER BY id_user, promo_start;
+
+Task 7
+Introduction to SQL Window Functions
+SQL window functions represent a powerful class of functions that enable complex calculations across a set of table rows related to the current row without collapsing the result into a single row. These functions are particularly beneficial in data analysis and reporting, where both detailed and aggregated insights are required simultaneously. Unlike traditional aggre-gate functions, window functions retain the individual row details while performing computations, thereby providing granu-lar insights alongside summary statistics. The versatility of window functions stems from their ability to perform operations such as ranking, running totals, moving averages, and cumulative sums. This makes them indispensable for scenarios where contextual row-by-row calculations are necessary.
+
+Core Findings from SQL Tasks
+Data Loading and Management
+•	Data Integration: Utilizing PostgreSQL's Foreign Data Wrapper (FDW) feature, data can be loaded and queried effi-ciently from external sources without manual data transformation. This approach showcases the flexibility of Post-greSQL in handling external datasets seamlessly.
+Data Aggregation and Filtering
+•	Selective Aggregation: By leveraging conditional aggregation, it's possible to filter and compute totals for specific subsets of data directly within a single query. This method simplifies data retrieval and ensures that the results are both precise and relevant to the specified conditions.
+Sequential and Ranking Operations
+•	Row Sequencing: Window functions like ROW_NUMBER() enable the assignment of sequential identifiers to rows within partitions. This is particularly useful for tasks requiring recent or top-N entries per category, ensuring that da-ta is ordered and segmented accurately.
+•	Ranking and Conditional Inclusion: Functions such as RANK() allow for handling ties effectively in ranking scenari-os, ensuring that all relevant data points are included even when they exceed typical limits due to equal values.
+Inter-Row Calculations
+•	Contextual Data Enhancement: Functions such as LAG() and LEAD() facilitate the comparison of each row with its preceding or following row, enabling detailed analysis of trends and changes over time. This is critical for calculating metrics like the interval between events or changes in status based on historical data.
+•	Complex Conditional Logic: By combining window functions with conditional statements, it's possible to enrich datasets with derived columns that provide deeper insights. For instance, flagging promotional periods or calculat-ing ratios relative to initial values can be achieved succinctly and efficiently.
+Promotional Period Consolidation
+•	Period Merging: Advanced window function capabilities allow for the consolidation of overlapping periods, which is essential for calculating continuous eligibility in promotional scenarios. This involves identifying and grouping con-tiguous periods, a process that would be cumbersome without the use of window functions.
+
